@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Expansion 3D · Interplan</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/vendor/three/build/three.module.js",
+        "three/addons/": "/vendor/three/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Expansion 3D <span>Interplan</span></div>
+    <div id="rede-atual" class="rede-atual"></div>
+    <div id="progresso" class="progresso"></div>
+    <div id="status" class="status"></div>
+    <div id="conta" class="conta">
+      <span id="conta-nome" class="conta-nome"></span>
+      <button id="entrar" type="button" hidden>Entrar com o Atlas</button>
+      <button id="sair" type="button" class="secundario" hidden>Sair</button>
+    </div>
+  </header>
+
+  <aside class="sidebar">
+    <section>
+      <h2>Acervo de redes</h2>
+      <p id="aviso-visualizacao" class="aviso" hidden></p>
+      <form id="upload-form" class="upload">
+        <input id="up-arquivo" type="file" accept=".mdb,.accdb" required>
+        <select id="up-regiao" aria-label="Região da rede"></select>
+        <select id="up-visibilidade" aria-label="Quem pode ver esta rede">
+          <option value="publica">Pública: todos veem</option>
+          <option value="privada">Privada: só eu vejo</option>
+        </select>
+        <input id="up-descricao" type="text" placeholder="Descrição: projeto, estudo, ano…" maxlength="200">
+        <button type="submit">Enviar rede</button>
+      </form>
+      <p id="acervo-status" class="ctx-status"></p>
+      <div class="filtros-acervo">
+        <select id="acervo-regiao" aria-label="Filtrar por região"></select>
+        <input id="acervo-busca" type="search" placeholder="Buscar por SE, circuito, usuário…">
+      </div>
+      <ul id="acervo" class="acervo"></ul>
+    </section>
+
+    <section>
+      <h2>Projetos em etapas</h2>
+      <form id="projeto-form" class="upload">
+        <input id="proj-nome" type="text" placeholder="Nome do projeto, ex.: Obra SE Guará" maxlength="80" required>
+        <input id="proj-descricao" type="text" placeholder="Descrição (opcional)" maxlength="200">
+        <select id="proj-visibilidade" aria-label="Quem pode ver este projeto">
+          <option value="publica">Público: todos veem</option>
+          <option value="privada">Privado: só eu vejo</option>
+        </select>
+        <button type="submit">Criar projeto</button>
+      </form>
+      <p id="projetos-status" class="ctx-status"></p>
+      <ul id="projetos" class="acervo"></ul>
+      <p class="note">A Etapa 0 costuma ser a rede atual; as seguintes, as obras projetadas.
+        Todas ficam carregadas na memória, então a troca é imediata e o relevo, as árvores,
+        as casas e as ruas são reaproveitados.</p>
+    </section>
+
+    <section>
+      <h2>Camadas KML/KMZ</h2>
+      <form id="kml-form" class="upload">
+        <input id="kml-arquivo" type="file" accept=".kml,.kmz" required>
+        <select id="kml-visibilidade" aria-label="Quem pode ver esta camada">
+          <option value="publica">Pública: todos veem</option>
+          <option value="privada">Privada: só eu vejo</option>
+        </select>
+        <input id="kml-descricao" type="text" placeholder="Descrição (opcional)" maxlength="200">
+        <button type="submit">Importar KML/KMZ</button>
+      </form>
+      <p id="kml-status" class="ctx-status"></p>
+      <ul id="camadas" class="acervo"></ul>
+    </section>
+
+    <section>
+      <h2>Exportar</h2>
+      <button id="exportar-kmz" type="button" class="largo">Exportar KMZ do que está visível</button>
+      <p id="exportar-status" class="ctx-status"></p>
+      <p class="note">O KMZ leva só as camadas e os circuitos marcados agora, com as altitudes
+        do relevo — o que estiver desmarcado não entra no arquivo.</p>
+    </section>
+    <section>
+      <h2 id="se-title">Subestação</h2>
+      <div id="summary" class="summary"></div>
+    </section>
+    <section>
+      <h2>Circuitos</h2>
+      <ul id="circuits" class="circuits"></ul>
+    </section>
+    <section>
+      <h2>Vegetação × rede</h2>
+      <p id="ctx-veg" class="ctx-status"></p>
+      <div id="veg-summary" class="summary veg-summary"></div>
+      <ol id="veg-list" class="veg-list"></ol>
+      <p class="note">Folga vertical mínima entre o cabo e a copa ao longo do vão (faixa de ±2,5 m). Triagem com dados de satélite; confirme em campo.</p>
+    </section>
+    <section>
+      <h2>Prédios e vias</h2>
+      <p id="ctx-predios" class="ctx-status"></p>
+      <p id="ctx-ruas" class="ctx-status"></p>
+      <p id="ctx-predios-blocos" class="note"></p>
+    </section>
+    <section>
+      <h2>Camadas</h2>
+      <div id="layers" class="layers"></div>
+    </section>
+    <section>
+      <h2>Buscar</h2>
+      <form id="search-form" class="search">
+        <input id="search" type="text" placeholder="Código do equipamento" list="search-list" spellcheck="false">
+        <datalist id="search-list"></datalist>
+        <button type="submit">Ir</button>
+      </form>
+    </section>
+    <section>
+      <h2>Legenda</h2>
+      <ul class="legend">
+        <li><i style="background:#8d8d8d"></i>Poste</li>
+        <li><i style="background:#5b6b7a"></i>Transformador (ET)</li>
+        <li><i style="background:#c7a24a"></i>Cabine de cliente MT (EP)</li>
+        <li><i style="background:#2fb36b"></i>Chave fechada</li>
+        <li><i style="background:#e0483e"></i>Chave aberta</li>
+        <li><i style="background:#7a4fd6"></i>Regulador / Capacitor</li>
+        <li><i style="background:#f2c230"></i>Geração distribuída</li>
+        <li><i style="background:#3f7d3a"></i>Árvore</li>
+        <li><i style="background:#5a5a62"></i>Rua / via</li>
+        <li><i style="background:#d9d3c5"></i>Prédio / casa (cinza: galpão &gt; 3.000 m²)</li>
+        <li><i style="background:#e0483e"></i>Vão com vegetação: contato provável</li>
+        <li><i style="background:#ff8a3d"></i>Vão com vegetação: crítico</li>
+        <li><i style="background:#f5d547"></i>Vão com vegetação: atenção</li>
+      </ul>
+    </section>
+  </aside>
+
+  <div id="resizer" class="resizer" title="Arraste para mudar a largura do painel"></div>
+
+  <main id="viewport" class="viewport">
+    <div id="loading" class="loading" hidden>
+      <div class="caixa">
+        <div class="spinner"></div>
+        <b id="loading-titulo">Abrindo rede…</b>
+        <span id="loading-sub"></span>
+      </div>
+    </div>
+    <div id="empty" class="empty">Envie um <b>rede.mdb</b> do Interplan ou abra uma rede do acervo.</div>
+    <div id="barra-etapas" class="barra-etapas" hidden>
+      <span class="titulo-etapas" id="barra-etapas-nome"></span>
+      <div id="etapas-botoes" class="etapas-botoes"></div>
+      <label class="dividir"><input id="dividir-tela" type="checkbox"> Comparar lado a lado</label>
+      <select id="etapa-direita" class="etapa-direita" hidden aria-label="Etapa do lado direito"></select>
+    </div>
+    <div id="rotulo-esq" class="rotulo-lado" hidden></div>
+    <div id="rotulo-dir" class="rotulo-lado direita" hidden></div>
+    <div class="hint">Arraste: orbitar · Botão direito: mover · Roda: zoom · Clique: detalhes · Duplo clique: focar</div>
+    <div id="attribution" class="attribution" hidden>Mapa © colaboradores do OpenStreetMap</div>
+  </main>
+
+  <aside id="info" class="info" hidden>
+    <button id="info-close" class="close" aria-label="Fechar">×</button>
+    <h3 id="info-title"></h3>
+    <p id="info-kind" class="kind"></p>
+    <table id="info-table"></table>
+    <a id="info-streetview" class="sv-link" target="_blank" rel="noopener" hidden>Abrir no Google Street View</a>
+  </aside>
+
+  <script type="module" src="/static/main.js"></script>
+</body>
+</html>

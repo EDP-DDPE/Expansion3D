@@ -1,0 +1,6 @@
+conf.ini
+__pycache__/
+.claude/
+
+data/
+node_modules/
