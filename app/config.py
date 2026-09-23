@@ -17,6 +17,11 @@ MODELO_CONF = """\
 host = 0.0.0.0
 porta = 8010
 titulo = Expansion 3D
+; Endereço pelo qual os usuários abrem o Expansion, com http:// ou https:// e a porta.
+; É o endereço que o Atlas recebe para devolver o ticket do login. Deixe igual ao
+; EXPANSION_URL do .env do Atlas. Em branco, o endereço é deduzido da requisição, o que
+; erra o esquema quando há proxy ou balanceador no caminho (vira https numa porta http).
+url_publica = http://172.20.70.54:8010
 
 [dados]
 ; Pasta raiz: acervo de bases enviadas, banco do acervo e cache das fontes abertas.
@@ -102,6 +107,7 @@ class Settings:
     host: str
     porta: int
     titulo: str
+    url_publica: str
     pasta_dados: Path
     tamanho_max_mb: int
     senha: str
@@ -178,6 +184,7 @@ def carregar(path: Path = CONF_PATH) -> Settings:
         host=cp.get("servidor", "host"),
         porta=cp.getint("servidor", "porta"),
         titulo=cp.get("servidor", "titulo"),
+        url_publica=cp.get("servidor", "url_publica", fallback="").strip().rstrip("/"),
         pasta_dados=pasta,
         tamanho_max_mb=cp.getint("dados", "tamanho_max_mb"),
         senha=cp.get("interplan", "senha"),

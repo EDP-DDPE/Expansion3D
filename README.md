@@ -140,16 +140,46 @@ exclui nada.
 
 | Onde | Chave | Valor |
 |---|---|---|
+| Expansion · `conf.ini` `[servidor]` | `url_publica` | endereço do **Expansion**, com esquema e porta |
+| Expansion · `conf.ini` `[atlas]` | `url` | endereço do **Atlas** |
 | Expansion · `conf.ini` `[atlas]` | `segredo` | a mesma frase nas duas pontas |
-| Expansion · `conf.ini` `[atlas]` | `url` | endereço do Atlas |
-| Atlas · `.env` | `EXPANSION_SECRET` | a mesma frase |
 | Atlas · `.env` | `EXPANSION_URL` | endereço do Expansion (único retorno aceito) |
+| Atlas · `.env` | `EXPANSION_SECRET` | a mesma frase |
+
+`url_publica` e `EXPANSION_URL` precisam ser **idênticos**, esquema e porta inclusive. O Atlas
+compara os dois antes de devolver o ticket e recusa com uma mensagem que mostra o que recebeu e o
+que esperava.
+
+> **Por que `url_publica` existe.** Deduzir o endereço da requisição erra sempre que houver proxy
+> no caminho: basta um `X-Forwarded-Proto: https` para o endereço virar `https://host:8010`, e a
+> 8010 responde em HTTP puro. O mesmo esquema errado ainda faria o cookie de sessão sair marcado
+> como `Secure` numa conexão HTTP, e aí o navegador o descarta sem avisar — o login falharia em
+> silêncio, mesmo com o redirecionamento certo.
+> Teste: `python tools/teste_retorno_login.py` (com o serviço no ar).
+
+### A volta do Atlas não usa `Location`
+
+O nginx à frente do Atlas reescreve `http://` para `https://` no cabeçalho `Location`
+(`proxy_redirect`, comum em quem termina TLS). Como o Expansion responde em HTTP puro na 8010, o
+endereço reescrito virava `https://172.20.70.54:8010/...` e o navegador mostrava *"a conexão com
+este site não é segura — resposta inválida"*, mesmo com o Atlas tendo recebido o endereço certo.
+
+Por isso a rota do Atlas **devolve uma página** que navega sozinha (meta refresh + `location.replace`),
+em vez de um 302: o nginx reescreve cabeçalhos, não o corpo da resposta. Assim a integração não
+depende de mexer na configuração do nginx.
+
+Teste (precisa do Flask, que está no venv do Atlas):
+
+```bash
+& "...\GCIWeb\.venv\Scripts\python.exe" tools\teste_volta_atlas.py
+```
 
 No Atlas, a integração é o blueprint `app/expansion/`, registrado em `app/main/__init__.py`.
 Para desligar tudo e liberar o acesso sem login (máquina de desenvolvimento): `ativo = nao`.
 
 Testes: `python tools/teste_ticket_atlas.py` (o ticket do Atlas é aceito pelo Expansion, e só com o
-segredo certo) e `python tools/teste_api.py` (regras de acesso da API, ponta a ponta).
+segredo certo), `python tools/teste_retorno_login.py` (endereço de retorno e flags do cookie, com e
+sem proxy) e `python tools/teste_api.py` (regras de acesso da API, ponta a ponta).
 
 ## Redes públicas e privadas
 

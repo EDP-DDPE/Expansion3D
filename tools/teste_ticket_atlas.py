@@ -37,6 +37,9 @@ def carregar_rotas_do_atlas(raiz: Path):
     flask.current_app = types.SimpleNamespace(logger=types.SimpleNamespace(
         warning=lambda *a, **k: None, error=lambda *a, **k: None))
     flask.redirect = lambda destino: destino
+    # a montagem da página de volta é testada com Flask de verdade em teste_volta_atlas.py;
+    # aqui o dublê só precisa existir para o import do módulo funcionar
+    flask.render_template_string = lambda modelo, **ctx: modelo
     flask.request = types.SimpleNamespace(args={})
     flask.session = {}
     auth = types.ModuleType("app.auth")
@@ -98,6 +101,9 @@ def main() -> int:
         ("http://172.20.70.54:8010/qualquer/caminho", True),
         ("https://site-de-fora.com/roubar", False),
         ("http://172.20.70.54:9999/outra-porta", False),
+        # esquema trocado: a 8010 responde em http, e mandar o ticket para https dava
+        # "resposta inválida" no navegador — melhor recusar aqui, com mensagem clara
+        ("https://172.20.70.54:8010/auth/retorno", False),
         ("", False),
     ]
     for url, esperado in casos:

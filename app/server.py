@@ -68,12 +68,24 @@ MOLDURA_PRONTA = ("<!doctype html><meta charset=utf-8><title>Login</title>"
                   "<p style='font:13px system-ui;color:#8a97a4'>{texto}</p>")
 
 
+def _endereco_publico(request: Request) -> str:
+    """Endereço por onde o navegador enxerga o Expansion.
+
+    Vem do conf.ini quando configurado. Deduzir da requisição erra o esquema sempre que houver
+    proxy ou balanceador no caminho: um X-Forwarded-Proto: https faz o endereço virar
+    `https://host:8010`, e a 8010 responde em HTTP puro — o navegador recebe "resposta inválida".
+    """
+    if settings.url_publica:
+        return settings.url_publica
+    return str(request.base_url).rstrip("/")
+
+
 @app.get("/auth/entrar")
 def entrar(request: Request, auto: int = 0, quadro: int = 0) -> RedirectResponse:
     """Manda o usuário ao Atlas, que devolve um ticket assinado se houver sessão por lá."""
     if not settings.sso_pronto:
         return RedirectResponse("/", status_code=303)
-    retorno = str(request.base_url).rstrip("/") + "/auth/retorno"
+    retorno = _endereco_publico(request) + "/auth/retorno"
     if quadro:  # tentativa silenciosa: a volta é uma página mínima, não a aplicação inteira
         retorno += "?quadro=1"
     destino = f"{settings.atlas_url}/api/expansion/ticket?{urlencode({'retorno': retorno, 'auto': auto})}"
@@ -106,8 +118,9 @@ def retorno(request: Request, ticket: str = "", auto: int = 0, quadro: int = 0):
     resposta.set_cookie(
         sessao.COOKIE, sessao.criar_cookie(usuario),
         max_age=settings.sessao_validade_h * 3600, httponly=True, samesite="lax",
-        # o Secure segue como o Expansion é servido: marcado em conexão http o navegador descarta
-        secure=request.url.scheme == "https",
+        # o Secure segue o endereço público: marcado numa conexão http, o navegador descarta o
+        # cookie sem avisar, e o login falharia em silêncio
+        secure=_endereco_publico(request).startswith("https://"),
     )
     return resposta
 
