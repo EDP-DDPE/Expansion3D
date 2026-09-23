@@ -7,6 +7,7 @@ Use: python tools/teste_ticket_atlas.py [caminho do GCIWeb]
 """
 from __future__ import annotations
 
+import html
 import importlib.util
 import sys
 import time
@@ -42,6 +43,12 @@ def carregar_rotas_do_atlas(raiz: Path):
     flask.render_template_string = lambda modelo, **ctx: modelo
     flask.request = types.SimpleNamespace(args={})
     flask.session = {}
+    # o markupsafe vive no venv do Atlas; aqui o dublê usa o escape da biblioteca padrão, que
+    # faz a mesma coisa para texto — quem confere a segurança da página é o teste_volta_atlas.py
+    markupsafe = types.ModuleType("markupsafe")
+    markupsafe.escape = lambda valor: html.escape(str(valor), quote=True)
+    sys.modules.setdefault("markupsafe", markupsafe)
+
     auth = types.ModuleType("app.auth")
     auth.get_usuario_logado = lambda: None
     pacote = types.ModuleType("app")

@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
+import urllib.parse
 from pathlib import Path
 
 ATLAS_PADRAO = Path(r"C:\Users\7034\EDP\O365_Planejamento da Expansao - Documentos"
@@ -100,6 +101,33 @@ def main() -> int:
     conferir("esquema trocado é recusado", r.status_code == 400, f"HTTP {r.status_code}")
     conferir("a recusa explica o que esperava",
              "EXPANSION_URL" in r.get_data(as_text=True))
+
+    # --- a mensagem de recusa é HTML: o que veio da URL tem de sair escapado ----------------
+    # Sem escape, ?retorno=<script>… era refletido e executado na origem do Atlas.
+    payload = "<script>alert(document.domain)</script>"
+    r = cliente.get("/api/expansion/ticket?retorno=" + urllib.parse.quote(payload, safe=""))
+    corpo = r.get_data(as_text=True)
+    conferir("payload de XSS é recusado", r.status_code == 400, f"HTTP {r.status_code}")
+    conferir("a tag não volta executável", "<script>alert(" not in corpo)
+    conferir("volta escapada", "&lt;script&gt;" in corpo, corpo[corpo.find("Recebido"):][:70])
+
+    # o mesmo vale para um retorno com aspas, que quebraria um atributo
+    r = cliente.get('/api/expansion/ticket?retorno=' + urllib.parse.quote('" onload="alert(1)', safe=""))
+    conferir('aspas do retorno não escapam do texto', '" onload="' not in r.get_data(as_text=True))
+
+    # --- e a página de volta? ---------------------------------------------------------------
+    # Um retorno pode passar na conferência de origem e ainda trazer aspas no caminho:
+    # host e porta batem, mas o resto entra no href, no meta refresh e no script.
+    maldoso = 'http://172.20.70.54:8010/auth/retorno"><script>alert(1)</script>'
+    conferir("esse retorno realmente passa na conferência de origem",
+             atlas._retorno_confiavel(maldoso))
+    r = cliente.get("/api/expansion/ticket?retorno=" + urllib.parse.quote(maldoso, safe=""))
+    corpo = r.get_data(as_text=True)
+    conferir("página de volta é servida", r.status_code == 200, f"HTTP {r.status_code}")
+    conferir("nenhuma tag script injetada", corpo.count("<script>") == 1,
+             f"{corpo.count('<script>')} tag(s) script")
+    conferir("o atributo href não é quebrado", '"><script>' not in corpo)
+    conferir("o endereço aparece escapado", "&lt;script&gt;" in corpo or "&#34;" in corpo)
 
     print("\nresultado:", "tudo certo" if not falhas else f"{falhas} falha(s)")
     return 1 if falhas else 0
