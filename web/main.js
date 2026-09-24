@@ -64,9 +64,24 @@ const state = {
   usuario: null, sso: false, atlas: '',
   etapas: [], ativa: 0, direita: 1, dividida: false, projeto: null, projetos: [],
   camadas: [], importadas: [], contexto: null, cfg: null,
+  composicao: [], pastas: [], subestacoes: new Map(), abertas: new Set(), expandidas: new Set(),
 };
 
 const etapaAtual = () => state.etapas[state.ativa] ?? null;
+
+// A visualização é uma composição: de cada rede, as subestações escolhidas (lista vazia = rede
+// inteira). O servidor recebe isso como `rede:SE1,SE2;outra_rede:` e devolve um modelo único.
+const chaveDe = (composicao) => composicao
+  .map((p) => `${p.rede}:${[...(p.ses ?? [])].sort().join(',')}`).join(';');
+
+const mesmaComposicao = (a, b) => chaveDe(a) === chaveDe(b);
+
+function rotuloPedaco(p) {
+  const rede = state.acervo.find((r) => r.id === p.rede);
+  const nome = rede?.arquivo ?? p.rede;
+  const ses = [...(p.ses ?? [])];
+  return ses.length ? `${ses.join(', ')} · ${nome}` : `rede inteira · ${nome}`;
+}
 
 // --- prédios e árvores conforme a câmera ------------------------------------------------------
 let proximaAtualizacao = 0;
@@ -270,6 +285,7 @@ function clearNetwork() {
   state.net = null;
   state.data = null;
   selection.visible = false;
+  renderVisualizacao();
   $('info').hidden = true;
   $('veg-summary').replaceChildren();
   $('veg-list').replaceChildren();
@@ -288,8 +304,8 @@ function focusBox(box, minDistance = 150) {
 }
 
 // --- abertura de rede e de projeto --------------------------------------------------------------
-async function baixarRede(id, rotulo, token) {
-  return fetchJsonProgresso(`/api/rede?id=${encodeURIComponent(id)}`, (pct, bytes) => {
+async function baixarRede(chave, rotulo, token) {
+  return fetchJsonProgresso(`/api/rede?c=${encodeURIComponent(chave)}`, (pct, bytes) => {
     if (token !== state.token) return;
     setProgresso('rede', { rotulo, pct, texto: `${fmt(bytes / 1048576, 1)} MB` });
     setLoading(true, 'Abrindo a rede…', pct == null
@@ -298,10 +314,57 @@ async function baixarRede(id, rotulo, token) {
   });
 }
 
-/** Abre uma rede solta do acervo: internamente é um projeto de uma etapa só. */
+/** Abre uma rede inteira do acervo. */
 function loadRede(id) {
   if (!id) return Promise.resolve();
-  return abrirProjeto({ nome: null, etapas: [{ id: `rede:${id}`, nome: 'Rede', rede_id: id }] });
+  return abrirComposicao([{ rede: id, ses: [] }]);
+}
+
+/** Abre uma composição solta: internamente é um projeto de uma etapa só. */
+function abrirComposicao(composicao) {
+  if (!composicao.length) return Promise.resolve();
+  return abrirProjeto({
+    nome: null,
+    etapas: [{ id: 'atual', nome: 'Visualização', composicao }],
+  });
+}
+
+/** Acrescenta uma subestação (ou uma rede inteira) à visualização já aberta. */
+function acrescentar(rede, cod) {
+  const composicao = state.composicao.map((p) => ({ rede: p.rede, ses: [...(p.ses ?? [])] }));
+  const existente = composicao.find((p) => p.rede === rede);
+  if (!cod) {
+    // rede inteira: substitui qualquer recorte dela que já estivesse na cena
+    if (existente) existente.ses = [];
+    else composicao.push({ rede, ses: [] });
+  } else if (existente) {
+    if (!existente.ses.length) {
+      setStatus('Esta rede já está inteira na visualização.', true);
+      return Promise.resolve();
+    }
+    if (existente.ses.includes(cod)) {
+      setStatus(`${cod} já está na visualização.`, true);
+      return Promise.resolve();
+    }
+    existente.ses.push(cod);
+  } else {
+    composicao.push({ rede, ses: [cod] });
+  }
+  return abrirComposicao(composicao);
+}
+
+/** Tira um pedaço da visualização (uma subestação, ou a rede toda). */
+function removerPedaco(indice, cod) {
+  const composicao = state.composicao.map((p) => ({ rede: p.rede, ses: [...(p.ses ?? [])] }));
+  const pedaco = composicao[indice];
+  if (!pedaco) return Promise.resolve();
+  if (cod && pedaco.ses.length > 1) pedaco.ses = pedaco.ses.filter((s) => s !== cod);
+  else composicao.splice(indice, 1);
+  if (!composicao.length) {
+    setStatus('A visualização ficaria vazia: mantenha ao menos uma subestação.', true);
+    return Promise.resolve();
+  }
+  return abrirComposicao(composicao);
 }
 
 /**
@@ -318,9 +381,13 @@ async function abrirProjeto(projeto) {
   setProgresso('rede', { rotulo: 'Rede', texto: 'no servidor…' });
   const t0 = performance.now();
 
+  const composicaoDe = (e) => (e.composicao?.length
+    ? e.composicao.map((p) => ({ rede: p.rede, ses: [...(p.subestacoes ?? p.ses ?? [])] }))
+    : [{ rede: e.rede_id, ses: [] }]);
+
   let data;
   try {
-    data = await baixarRede(etapas[0].rede_id, 'Rede', token);
+    data = await baixarRede(chaveDe(composicaoDe(etapas[0])), 'Rede', token);
   } catch (err) {
     if (token === state.token) {
       setStatus(`Erro: ${err.message}`, true);
@@ -340,10 +407,12 @@ async function abrirProjeto(projeto) {
   state.token = token;
   state.projeto = projeto.nome ? projeto : null;
   state.data = data;
-  state.redeId = etapas[0].rede_id;
+  state.composicao = composicaoDe(etapas[0]);
+  state.redeId = state.composicao[0].rede;
 
   state.etapas = etapas.map((e, i) => ({
-    ...e, indice: i, data: null, net: null, circOn: new Map(), estado: i === 0 ? 'montando' : 'na fila',
+    ...e, indice: i, composicao: composicaoDe(e), data: null, net: null, circOn: new Map(),
+    estado: i === 0 ? 'montando' : 'na fila',
   }));
   montarEtapa(state.etapas[0], data);
   state.ativa = 0;
@@ -374,11 +443,13 @@ async function abrirProjeto(projeto) {
   $('empty').hidden = true;
   focusBox(bboxWorld(data.postes));
   history.replaceState(null, '', projeto.id ? `?projeto=${encodeURIComponent(projeto.id)}`
-    : `?rede=${encodeURIComponent(state.redeId)}`);
+    : `?c=${encodeURIComponent(chaveDe(state.composicao))}`);
   const reg = data.meta.registro ?? {};
-  $('rede-atual').textContent = [projeto.nome, data.meta.nome, reg.descricao,
-    reg.usuario && `enviado por ${reg.usuario}`].filter(Boolean).join(' · ');
+  const ses = data.subestacoes.map((s) => s.cod).join(', ');
+  $('rede-atual').textContent = [projeto.nome, ses && `SE ${ses}`, data.meta.nome, reg.descricao]
+    .filter(Boolean).join(' · ');
   renderAcervo();
+  renderVisualizacao();
   // as duas listas trazem botões que só valem com uma rede aberta ("Mostrar na cena",
   // "Nova etapa"): sem redesenhá-las aqui eles continuariam desabilitados
   renderCamadas();
@@ -388,7 +459,7 @@ async function abrirProjeto(projeto) {
   setStatus(`${fmt(r.postes)} postes · relevo ${fmt(t?.min, 0)}–${fmt(t?.max, 0)} m · ${((performance.now() - t0) / 1000).toFixed(1)} s`);
   setProgresso('rede', { rotulo: 'Rede', pct: 1, texto: 'pronto', concluido: true });
   setLoading(false);
-  loadContext(state.redeId, token);
+  loadContext(chaveDe(state.composicao), token);
   if (state.etapas.length > 1) carregarDemaisEtapas(token);
 }
 
@@ -418,7 +489,8 @@ async function carregarDemaisEtapas(token) {
     renderBarraEtapas();
     setProgresso(`etapa${etapa.indice}`, { rotulo: etapa.nome, texto: 'no servidor…' });
     try {
-      const data = await fetchJsonProgresso(`/api/rede?id=${encodeURIComponent(etapa.rede_id)}`,
+      const data = await fetchJsonProgresso(
+        `/api/rede?c=${encodeURIComponent(chaveDe(etapa.composicao))}`,
         (pct, bytes) => setProgresso(`etapa${etapa.indice}`,
           { rotulo: etapa.nome, pct, texto: `${fmt(bytes / 1048576, 1)} MB` }));
       if (token !== state.token) return;
@@ -443,10 +515,13 @@ function mostrarEtapa(indice) {
   state.ativa = indice;
   state.net = etapa.net;
   state.data = etapa.data;
+  state.composicao = etapa.composicao ?? state.composicao;
+  state.redeId = state.composicao[0]?.rede ?? state.redeId;
   apontarCamera(camera, indice);
   renderSidebar();
   renderLayers();
   renderBarraEtapas();
+  renderVisualizacao();
   applyVisibility();
   setStatus(`${etapa.nome} · ${fmt(etapa.data.meta.resumo.postes)} postes · ${fmt(etapa.data.meta.resumo.km, 1, 'km')}`);
 }
@@ -542,9 +617,26 @@ function cartaoRede(r) {
   const acoes = document.createElement('div');
   acoes.className = 'acoes';
   const abrir = document.createElement('button');
-  abrir.textContent = r.id === state.redeId ? 'Recarregar' : 'Abrir';
+  abrir.textContent = 'Abrir tudo';
+  abrir.title = 'Abrir a rede inteira';
   abrir.addEventListener('click', () => loadRede(r.id));
-  acoes.append(abrir);
+  const escolher = document.createElement('button');
+  escolher.className = 'secundario';
+  escolher.textContent = state.expandidas.has(r.id) ? 'Ocultar SEs' : 'Escolher SEs';
+  escolher.title = 'Escolher subestações: redes grandes abrem muito mais rápido assim';
+  escolher.addEventListener('click', () => {
+    if (state.expandidas.has(r.id)) state.expandidas.delete(r.id);
+    else state.expandidas.add(r.id);
+    renderAcervo();
+  });
+  const mais = document.createElement('button');
+  mais.className = 'secundario';
+  mais.textContent = '+ na cena';
+  mais.title = 'Acrescentar esta rede inteira à visualização aberta';
+  mais.disabled = !state.data;
+  mais.addEventListener('click', () => acrescentar(r.id, null));
+  acoes.append(abrir, escolher, mais);
+
   if (podeExcluir(r)) {
     const excluir = document.createElement('button');
     excluir.className = 'secundario';
@@ -552,6 +644,7 @@ function cartaoRede(r) {
     excluir.addEventListener('click', () => excluirRede(r));
     acoes.append(excluir);
   }
+
   li.append(titulo, linha);
   if (r.descricao) {
     const desc = document.createElement('div');
@@ -560,7 +653,170 @@ function cartaoRede(r) {
     li.append(desc);
   }
   li.append(quem, acoes);
+
+  // quem enviou pode trocar entre pública e privada; mover de pasta segue a regra da exclusão
+  const meu = state.usuario && (r.dono === state.usuario.matricula || state.usuario.admin);
+  if (meu || (state.usuario && podeExcluir(r))) {
+    const ajustes = document.createElement('div');
+    ajustes.className = 'ajustes';
+    if (meu) {
+      const vis = document.createElement('button');
+      vis.className = 'secundario';
+      const privada = r.visibilidade === 'privada';
+      vis.textContent = privada ? 'Tornar pública' : 'Tornar privada';
+      vis.title = privada ? 'Todos passam a ver esta rede' : 'Só você passa a ver esta rede';
+      vis.addEventListener('click', () => mudarVisibilidade(r, privada ? 'publica' : 'privada'));
+      ajustes.append(vis);
+    }
+    if (podeExcluir(r)) ajustes.append(seletorDePasta(r.pasta, (destino) => moverRede(r, destino)));
+    li.append(ajustes);
+  }
+
+  if (state.expandidas.has(r.id)) li.append(painelSubestacoes(r));
   return li;
+}
+
+async function mudarVisibilidade(r, visibilidade) {
+  try {
+    await fetchJson(`/api/acervo/${r.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visibilidade }),
+    });
+    setAcervoStatus(`${r.arquivo} agora é ${visibilidade}.`);
+    carregarAcervo();
+  } catch (err) {
+    setAcervoStatus(`Erro ao mudar a visibilidade: ${err.message}`, true);
+  }
+}
+
+async function moverRede(r, pasta) {
+  try {
+    await fetchJson(`/api/acervo/${r.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pasta }),
+    });
+    carregarAcervo();
+  } catch (err) {
+    setAcervoStatus(`Erro ao mover: ${err.message}`, true);
+  }
+}
+
+// --- visualização atual: os pedaços carregados --------------------------------------------------
+function renderVisualizacao() {
+  const lista = $('visualizacao');
+  if (!state.composicao.length || !state.data) {
+    lista.replaceChildren();
+    $('visualizacao-resumo').textContent = 'Nenhuma rede aberta.';
+    return;
+  }
+  const r = state.data.meta.resumo;
+  $('visualizacao-resumo').textContent =
+    `${fmt(state.composicao.length)} pedaço(s) · ${fmt(r.postes)} postes · ${fmt(r.km, 1, 'km')}`;
+
+  const linhas = [];
+  state.composicao.forEach((pedaco, indice) => {
+    const ses = [...(pedaco.ses ?? [])];
+    const itens = ses.length ? ses : [null];
+    for (const cod of itens) {
+      const li = document.createElement('li');
+      li.className = 'acervo-item linha';
+      const nome = document.createElement('span');
+      nome.className = 'name';
+      const rede = state.acervo.find((x) => x.id === pedaco.rede);
+      nome.textContent = cod ? `SE ${cod}` : 'rede inteira';
+      const origem = document.createElement('span');
+      origem.className = 'meta';
+      origem.textContent = rede?.arquivo ?? pedaco.rede;
+      const tirar = document.createElement('button');
+      tirar.className = 'secundario';
+      tirar.textContent = 'Tirar';
+      tirar.title = 'Tirar este pedaço da visualização';
+      tirar.disabled = state.composicao.length === 1 && itens.length === 1;
+      tirar.addEventListener('click', () => removerPedaco(indice, cod));
+      li.append(nome, origem, tirar);
+      linhas.push(li);
+    }
+  });
+  lista.replaceChildren(...linhas);
+}
+
+// --- acervo em árvore de pastas -----------------------------------------------------------------
+async function carregarPastas() {
+  try {
+    const { pastas } = await fetchJson('/api/pastas');
+    state.pastas = pastas;
+  } catch {
+    state.pastas = [];
+  }
+}
+
+function seletorDePasta(atual, aoEscolher) {
+  const sel = document.createElement('select');
+  sel.add(new Option('(raiz)', ''));
+  const incluir = (pai, prefixo) => {
+    for (const p of state.pastas.filter((x) => x.pai === pai)) {
+      sel.add(new Option(prefixo + p.nome, p.id));
+      incluir(p.id, `${prefixo}— `);
+    }
+  };
+  incluir('', '');
+  sel.value = atual ?? '';
+  sel.addEventListener('change', () => aoEscolher(sel.value));
+  return sel;
+}
+
+/** Subestações de uma rede, buscadas só quando o usuário abre a lista. */
+async function subestacoesDe(rede) {
+  if (state.subestacoes.has(rede)) return state.subestacoes.get(rede);
+  const dados = await fetchJson(`/api/subestacoes?id=${encodeURIComponent(rede)}`);
+  state.subestacoes.set(rede, dados.subestacoes);
+  return dados.subestacoes;
+}
+
+function painelSubestacoes(r) {
+  const caixa = document.createElement('div');
+  caixa.className = 'ses';
+  caixa.textContent = 'Lendo as subestações…';
+  subestacoesDe(r.id).then((ses) => {
+    caixa.replaceChildren();
+    if (!ses.length) { caixa.textContent = 'Esta rede não tem subestação com coordenada.'; return; }
+    const marcadas = new Set();
+    const linhas = ses.map((s) => {
+      const linha = document.createElement('div');
+      linha.className = 'se-row';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.addEventListener('change', () => {
+        if (box.checked) marcadas.add(s.cod); else marcadas.delete(s.cod);
+        abrirSel.disabled = !marcadas.size;
+      });
+      const nome = document.createElement('span');
+      nome.className = 'name';
+      nome.textContent = `${s.cod} · ${s.nome}`;
+      const peso = document.createElement('span');
+      peso.className = 'km';
+      peso.textContent = `${fmt(s.postes)} postes · ${fmt(s.km, 1, 'km')}`;
+      const mais = document.createElement('button');
+      mais.className = 'secundario mini';
+      mais.textContent = '+ SE';
+      mais.title = 'Acrescentar esta subestação à visualização aberta';
+      mais.disabled = !state.data;
+      mais.addEventListener('click', () => acrescentar(r.id, s.cod));
+      linha.append(box, nome, peso, mais);
+      return linha;
+    });
+    const acoes = document.createElement('div');
+    acoes.className = 'acoes';
+    const abrirSel = document.createElement('button');
+    abrirSel.textContent = 'Abrir só as marcadas';
+    abrirSel.disabled = true;
+    abrirSel.addEventListener('click', () => abrirComposicao([{ rede: r.id, ses: [...marcadas] }]));
+    acoes.append(abrirSel);
+    caixa.replaceChildren(...linhas, acoes);
+  }).catch((err) => { caixa.textContent = `Erro ao ler as subestações: ${err.message}`; });
+  return caixa;
 }
 
 function acervoFiltrado() {
@@ -575,9 +831,73 @@ function acervoFiltrado() {
   ].filter(Boolean).join(' ').toLowerCase().includes(busca));
 }
 
+function cabecalhoPasta(pasta, quantas) {
+  const li = document.createElement('li');
+  li.className = 'pasta';
+  const aberta = state.abertas.has(pasta.id);
+  const botao = document.createElement('button');
+  botao.type = 'button';
+  botao.className = `pasta-nome${aberta ? ' aberta' : ''}`;
+  botao.textContent = `${pasta.nome} (${fmt(quantas)})`;
+  botao.addEventListener('click', () => {
+    if (aberta) state.abertas.delete(pasta.id); else state.abertas.add(pasta.id);
+    renderAcervo();
+  });
+  li.append(botao);
+  if (state.usuario) {
+    const renomear = document.createElement('button');
+    renomear.className = 'secundario mini';
+    renomear.textContent = 'Renomear';
+    renomear.addEventListener('click', () => renomearPasta(pasta));
+    const apagar = document.createElement('button');
+    apagar.className = 'secundario mini';
+    apagar.textContent = 'Excluir';
+    apagar.addEventListener('click', () => excluirPasta(pasta));
+    li.append(renomear, apagar);
+  }
+  return li;
+}
+
 function renderAcervo() {
   const lista = acervoFiltrado();
-  $('acervo').replaceChildren(...lista.map(cartaoRede));
+  const existentes = new Set(state.pastas.map((p) => p.id));
+  const porPasta = new Map();
+  for (const r of lista) {
+    // pasta apagada (ou de outro usuário, invisível daqui): a rede volta para a raiz em vez
+    // de desaparecer da árvore
+    const chave = existentes.has(r.pasta) ? r.pasta : '';
+    if (!porPasta.has(chave)) porPasta.set(chave, []);
+    porPasta.get(chave).push(r);
+  }
+  // com busca ativa as pastas abrem sozinhas, senão o resultado ficaria escondido
+  const busca = ($('acervo-busca').value || '').trim();
+
+  const contar = (id) => (porPasta.get(id)?.length ?? 0)
+    + state.pastas.filter((p) => p.pai === id).reduce((soma, p) => soma + contar(p.id), 0);
+
+  const nos = [];
+  const montar = (pai, nivel) => {
+    for (const pasta of state.pastas.filter((p) => p.pai === pai)) {
+      const total = contar(pasta.id);
+      if (busca && !total) continue;
+      const cabecalho = cabecalhoPasta(pasta, total);
+      cabecalho.style.paddingLeft = `${nivel * 12}px`;
+      nos.push(cabecalho);
+      if (state.abertas.has(pasta.id) || busca) {
+        montar(pasta.id, nivel + 1);
+        for (const r of porPasta.get(pasta.id) ?? []) {
+          const cartao = cartaoRede(r);
+          cartao.style.marginLeft = `${(nivel + 1) * 12}px`;
+          nos.push(cartao);
+        }
+      }
+    }
+  };
+  montar('', 0);
+  for (const r of porPasta.get('') ?? []) nos.push(cartaoRede(r));
+
+  $('acervo').replaceChildren(...nos);
+  renderDestinoDePasta();
   if (state.acervo.length && !lista.length) {
     const vazio = document.createElement('li');
     vazio.className = 'acervo-item meta';
@@ -586,9 +906,64 @@ function renderAcervo() {
   }
 }
 
+/** Seletor de onde criar a próxima pasta, ao lado do botão (permite aninhar). */
+function renderDestinoDePasta() {
+  const caixa = $('nova-pasta-em');
+  if (!state.usuario || !state.pastas.length) { caixa.replaceChildren(); return; }
+  const rotulo = document.createElement('span');
+  rotulo.textContent = 'dentro de';
+  const sel = seletorDePasta(state.paiDaNovaPasta ?? '', (v) => { state.paiDaNovaPasta = v; });
+  caixa.replaceChildren(rotulo, sel);
+}
+
+async function novaPasta() {
+  const nome = window.prompt('Nome da nova pasta:');
+  if (!nome?.trim()) return;
+  try {
+    await fetchJson('/api/pastas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nome: nome.trim(), pai: state.paiDaNovaPasta ?? '' }),
+    });
+    await carregarPastas();
+    renderAcervo();
+    setContextStatus('pastas-status', `Pasta "${nome.trim()}" criada.`);
+  } catch (err) {
+    setContextStatus('pastas-status', `Erro ao criar a pasta: ${err.message}`, true);
+  }
+}
+
+async function renomearPasta(pasta) {
+  const nome = window.prompt('Novo nome da pasta:', pasta.nome);
+  if (!nome?.trim() || nome.trim() === pasta.nome) return;
+  try {
+    await fetchJson(`/api/pastas/${pasta.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nome: nome.trim() }),
+    });
+    await carregarPastas();
+    renderAcervo();
+  } catch (err) {
+    setContextStatus('pastas-status', `Erro ao renomear: ${err.message}`, true);
+  }
+}
+
+async function excluirPasta(pasta) {
+  if (!window.confirm(`Excluir a pasta "${pasta.nome}"?`)) return;
+  try {
+    await fetchJson(`/api/pastas/${pasta.id}`, { method: 'DELETE' });
+    await carregarPastas();
+    renderAcervo();
+    setContextStatus('pastas-status', `Pasta "${pasta.nome}" excluída.`);
+  } catch (err) {
+    setContextStatus('pastas-status', err.message, true);
+  }
+}
+
 async function carregarAcervo(abrir) {
   try {
-    const { redes } = await fetchJson('/api/acervo');
+    const [{ redes }] = await Promise.all([fetchJson('/api/acervo'), carregarPastas()]);
     state.acervo = redes;
     renderAcervo();
     const privadas = redes.filter((r) => r.visibilidade === 'privada').length;
@@ -681,8 +1056,8 @@ async function executarContexto({ chave, rotulo, url, alvo, token, montar, resum
   }
 }
 
-function loadContext(id, token) {
-  const q = `id=${encodeURIComponent(id)}`;
+function loadContext(chave, token) {
+  const q = `c=${encodeURIComponent(chave)}`;
 
   executarContexto({
     chave: 'ruas', rotulo: 'Ruas', alvo: 'ctx-ruas', url: `/api/contexto/ruas?${q}`, token,
@@ -1083,7 +1458,8 @@ async function mostrarCamada(c) {
   if (!state.redeId) return;
   setContextStatus('kml-status', `Posicionando ${c.arquivo} na rede…`);
   try {
-    const dados = await fetchJson(`/api/camadas/${c.id}?rede=${encodeURIComponent(state.redeId)}`);
+    const dados = await fetchJson(
+      `/api/camadas/${c.id}?c=${encodeURIComponent(chaveDe(state.composicao))}`);
     const built = buildImportada({ ...dados, id: c.id });
     addContext(built);
     state.importadas.push({
@@ -1226,17 +1602,20 @@ async function carregarProjetos(abrir) {
 }
 
 async function novaEtapa(projeto) {
-  const rede = state.acervo.find((r) => r.id === state.redeId);
   const sugestao = `Etapa ${projeto.etapas.length}`;
+  const resumo = state.composicao.map(rotuloPedaco).join('\n  ');
   const nome = window.prompt(
-    `Nova etapa de "${projeto.nome}" com a rede aberta agora (${rede?.arquivo ?? state.redeId}).\n`
+    `Nova etapa de "${projeto.nome}", salvando a visualização como está:\n  ${resumo}\n\n`
     + 'Nome da etapa:', sugestao);
   if (nome === null) return;
   try {
     await fetchJson(`/api/projetos/${projeto.id}/etapas`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nome: nome.trim() || sugestao, rede_id: state.redeId }),
+      body: JSON.stringify({
+        nome: nome.trim() || sugestao,
+        composicao: chaveDe(state.composicao),
+      }),
     });
     carregarProjetos();
     setContextStatus('projetos-status', `Etapa acrescentada a "${projeto.nome}".`);
@@ -1299,7 +1678,7 @@ $('exportar-kmz').addEventListener('click', async () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        id: etapa.rede_id,
+        c: chaveDe(etapa.composicao ?? state.composicao),
         camadas,
         circuitos,
         importadas: state.importadas.map((i) => i.id),
@@ -1496,8 +1875,18 @@ async function init() {
   const sessao = await carregarSessao();
   tentarLoginAutomatico(sessao);
   const params = new URLSearchParams(location.search);
+  $('nova-pasta').addEventListener('click', novaPasta);
   await Promise.all([carregarAcervo(params.get('rede') ?? undefined), carregarCamadas(),
     carregarProjetos(params.get('projeto') ?? undefined)]);
+  // link de uma visualização montada: ?c=rede:SE1,SE2;outra:
+  const chave = params.get('c');
+  if (chave && !params.get('projeto')) {
+    const composicao = chave.split(';').filter(Boolean).map((parte) => {
+      const [rede, ses] = parte.split(':');
+      return { rede, ses: (ses ?? '').split(',').filter(Boolean) };
+    });
+    if (composicao.length) abrirComposicao(composicao);
+  }
 }
 
 // Referência para diagnóstico pelo console do navegador (F12), útil para conferir o que está

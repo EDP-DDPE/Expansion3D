@@ -68,16 +68,28 @@ CREATE TABLE IF NOT EXISTS etapas (
     descricao TEXT NOT NULL DEFAULT '',
     rede_id TEXT NOT NULL DEFAULT '',
     camadas TEXT NOT NULL DEFAULT '[]',
+    composicao TEXT NOT NULL DEFAULT '[]',
     criado_em TEXT NOT NULL,
     FOREIGN KEY (projeto_id) REFERENCES projetos (id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS etapas_projeto ON etapas (projeto_id, ordem);
+
+CREATE TABLE IF NOT EXISTS pastas (
+    id TEXT PRIMARY KEY,
+    nome TEXT NOT NULL,
+    pai TEXT NOT NULL DEFAULT '',
+    usuario TEXT NOT NULL DEFAULT '',
+    criado_em TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pastas_pai ON pastas (pai);
 """
 
 # colunas acrescentadas depois da primeira versão do banco, com o valor usado nas linhas antigas
 MIGRACOES = {
     "redes": (("regiao", "TEXT", lambda: f"'{settings.regiao_padrao}'"), ("epsg", "INTEGER", lambda: settings.epsg),
-              ("visibilidade", "TEXT", lambda: f"'{PUBLICA}'"), ("dono", "TEXT", lambda: "''")),
+              ("visibilidade", "TEXT", lambda: f"'{PUBLICA}'"), ("dono", "TEXT", lambda: "''"),
+              ("pasta", "TEXT", lambda: "''")),
+    "etapas": (("composicao", "TEXT", lambda: "'[]'"),),
 }
 
 
@@ -106,6 +118,11 @@ def _linha(row: sqlite3.Row) -> dict:
         registro["resumo"] = json.loads(registro["resumo"])
     if "camadas" in registro:
         registro["camadas"] = json.loads(registro["camadas"])
+    if "composicao" in registro:
+        registro["composicao"] = json.loads(registro["composicao"] or "[]")
+        # etapas antigas guardavam só a rede inteira; viram uma composição de um pedaço só
+        if not registro["composicao"] and registro.get("rede_id"):
+            registro["composicao"] = [{"rede": registro["rede_id"], "subestacoes": []}]
     return registro
 
 
@@ -175,6 +192,50 @@ def adicionar(hash_: str, arquivo: str, tamanho: int, usuario: str, descricao: s
     return registro
 
 
+def mudar_visibilidade(id_: str, visibilidade: str, dono: str = "") -> bool:
+    """Troca entre pública e privada.
+
+    `dono` preenche o campo quando a rede ainda não tem um. Redes enviadas antes do login do
+    Atlas ficaram sem dono; sem isso, torná-las privadas as esconderia de todo mundo, já que
+    o filtro compara a matrícula e nenhuma bate com vazio.
+    """
+    if visibilidade not in (PUBLICA, PRIVADA):
+        return False
+    with closing(_conn()) as cn, cn:
+        if dono:
+            cur = cn.execute(
+                "UPDATE redes SET visibilidade = ?, dono = CASE WHEN dono = '' THEN ? ELSE dono END"
+                " WHERE id = ?", (visibilidade, dono, id_))
+        else:
+            cur = cn.execute("UPDATE redes SET visibilidade = ? WHERE id = ?", (visibilidade, id_))
+    return cur.rowcount > 0
+
+
+def mover(id_: str, pasta: str) -> bool:
+    """Muda a rede de pasta. Os projetos referenciam a rede pelo id, então nada mais muda."""
+    with closing(_conn()) as cn, cn:
+        cur = cn.execute("UPDATE redes SET pasta = ? WHERE id = ?", (pasta or "", id_))
+    return cur.rowcount > 0
+
+
+def projetos_que_usam(rede_id: str) -> list[dict]:
+    """Projetos cujas etapas dependem desta rede — usado para barrar a exclusão."""
+    with closing(_conn()) as cn:
+        linhas = cn.execute(
+            "SELECT p.id AS projeto, p.nome AS projeto_nome, p.visibilidade, p.dono,"
+            "       e.id AS etapa, e.nome AS etapa_nome, e.rede_id, e.composicao"
+            "  FROM etapas e JOIN projetos p ON p.id = e.projeto_id").fetchall()
+    usos = []
+    for linha in linhas:
+        pedacos = json.loads(linha["composicao"] or "[]")
+        redes = {p.get("rede") for p in pedacos} or {linha["rede_id"]}
+        if rede_id in redes:
+            usos.append({"projeto": linha["projeto"], "projeto_nome": linha["projeto_nome"],
+                         "etapa": linha["etapa"], "etapa_nome": linha["etapa_nome"],
+                         "visibilidade": linha["visibilidade"], "dono": linha["dono"]})
+    return usos
+
+
 def remover(id_: str) -> bool:
     """Remove o registro; o arquivo só sai do disco quando nenhum outro registro o usa."""
     with closing(_conn()) as cn, cn:
@@ -186,6 +247,69 @@ def remover(id_: str) -> bool:
     if not restantes:
         caminho(row["hash"]).unlink(missing_ok=True)
     return True
+
+
+# --- pastas do acervo ----------------------------------------------------------------------------
+def listar_pastas() -> list[dict]:
+    """Pastas são compartilhadas, como o próprio acervo."""
+    with closing(_conn()) as cn:
+        return [dict(r) for r in cn.execute("SELECT * FROM pastas ORDER BY nome")]
+
+
+def criar_pasta(nome: str, pai: str, usuario: str) -> dict:
+    registro = {"id": uuid.uuid4().hex[:12], "nome": nome, "pai": pai or "",
+                "usuario": usuario,
+                "criado_em": datetime.now().astimezone().isoformat(timespec="seconds")}
+    with closing(_conn()) as cn, cn:
+        cn.execute("INSERT INTO pastas (id, nome, pai, usuario, criado_em)"
+                   " VALUES (:id, :nome, :pai, :usuario, :criado_em)", registro)
+    return registro
+
+
+def conteudo_da_pasta(id_: str) -> dict:
+    """O que impede a pasta de ser apagada: subpastas e redes dentro dela."""
+    with closing(_conn()) as cn:
+        subpastas = [dict(r) for r in cn.execute("SELECT id, nome FROM pastas WHERE pai = ?", (id_,))]
+        redes = [dict(r) for r in cn.execute("SELECT id, arquivo FROM redes WHERE pasta = ?", (id_,))]
+    return {"subpastas": subpastas, "redes": redes}
+
+
+def remover_pasta(id_: str) -> bool:
+    with closing(_conn()) as cn, cn:
+        cur = cn.execute("DELETE FROM pastas WHERE id = ?", (id_,))
+    return cur.rowcount > 0
+
+
+def renomear_pasta(id_: str, nome: str) -> bool:
+    with closing(_conn()) as cn, cn:
+        cur = cn.execute("UPDATE pastas SET nome = ? WHERE id = ?", (nome, id_))
+    return cur.rowcount > 0
+
+
+def descendentes(id_: str) -> set:
+    """Todas as pastas abaixo desta, para impedir que uma pasta seja movida para dentro de si."""
+    pastas = listar_pastas()
+    filhos: dict = {}
+    for p in pastas:
+        filhos.setdefault(p["pai"], []).append(p["id"])
+    achados: set = set()
+    fila = [id_]
+    while fila:
+        atual = fila.pop()
+        for filho in filhos.get(atual, []):
+            if filho not in achados:
+                achados.add(filho)
+                fila.append(filho)
+    return achados
+
+
+def mover_pasta(id_: str, pai: str) -> bool:
+    pai = pai or ""
+    if pai and (pai == id_ or pai in descendentes(id_)):
+        return False  # viraria um ciclo, e a pasta sumiria da árvore
+    with closing(_conn()) as cn, cn:
+        cur = cn.execute("UPDATE pastas SET pai = ? WHERE id = ?", (pai, id_))
+    return cur.rowcount > 0
 
 
 # --- camadas importadas de KML/KMZ --------------------------------------------------------------
@@ -290,7 +414,10 @@ def remover_projeto(id_: str) -> bool:
 
 
 def adicionar_etapa(projeto_id: str, nome: str, rede_id: str, descricao: str = "",
-                    camadas: list[str] | None = None, ordem: int | None = None) -> dict:
+                    camadas: list[str] | None = None, ordem: int | None = None,
+                    composicao: list[dict] | None = None) -> dict:
+    """Guarda a etapa. `composicao` é a visualização inteira: que redes e que subestações de cada."""
+    composicao = composicao or ([{"rede": rede_id, "subestacoes": []}] if rede_id else [])
     with closing(_conn()) as cn, cn:
         if ordem is None:
             atual = cn.execute("SELECT MAX(ordem) FROM etapas WHERE projeto_id = ?", (projeto_id,)).fetchone()[0]
@@ -301,14 +428,18 @@ def adicionar_etapa(projeto_id: str, nome: str, rede_id: str, descricao: str = "
             "ordem": ordem,
             "nome": nome,
             "descricao": descricao,
-            "rede_id": rede_id,
+            # a primeira rede continua gravada à parte: é por ela que as telas antigas abrem a etapa
+            "rede_id": rede_id or (composicao[0].get("rede") if composicao else ""),
             "camadas": json.dumps(camadas or []),
+            "composicao": json.dumps(composicao, ensure_ascii=False),
             "criado_em": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         cn.execute(
-            "INSERT INTO etapas (id, projeto_id, ordem, nome, descricao, rede_id, camadas, criado_em)"
-            " VALUES (:id, :projeto_id, :ordem, :nome, :descricao, :rede_id, :camadas, :criado_em)", registro)
+            "INSERT INTO etapas (id, projeto_id, ordem, nome, descricao, rede_id, camadas,"
+            " composicao, criado_em) VALUES (:id, :projeto_id, :ordem, :nome, :descricao,"
+            " :rede_id, :camadas, :composicao, :criado_em)", registro)
     registro["camadas"] = json.loads(registro["camadas"])
+    registro["composicao"] = json.loads(registro["composicao"])
     return registro
 
 

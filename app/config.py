@@ -42,9 +42,12 @@ regiao_padrao = SP
 ativo = sim
 ; Endereço do Atlas, usado para pedir o ticket do usuário logado e para o botão "Entrar".
 url = https://172.20.70.54
-; Mesma frase secreta configurada no .env do Atlas como EXPANSION_SECRET.
-; Troque por outra antes de colocar em produção e mantenha as duas pontas iguais.
-segredo = mcwNSkEN_IRIZZQslVVaq8pdZ-XN00BK821iGzDw_aJ1FterTY6Ccj9hpFwnpa4X
+; Frase secreta que assina o ticket de login. Fica só no conf.ini (que está no .gitignore) e
+; precisa ser idêntica ao EXPANSION_SECRET do .env do Atlas. Nunca escreva o valor aqui neste
+; modelo, que vai para o controle de versão. Para gerar uma:
+;     python -c "import secrets; print(secrets.token_urlsafe(48))"
+; Em branco com ativo = sim, o serviço sobe em modo Visualização e não deixa ninguém alterar nada.
+segredo =
 ; Validade do ticket de entrada, em segundos (só do salto Atlas -> Expansion).
 ticket_validade_s = 120
 ; Validade da sessão do Expansion, em horas.
@@ -82,6 +85,14 @@ altura_por_andar_m = 3.0
 [cabos]
 ; Bitolas (mm²) desenhadas como Spacer Cable, em losango com mensageiro no topo.
 spacer_mm2 = 50, 70, 185
+
+[composicao]
+; Ao juntar subestações de redes diferentes, o relevo, o dossel e os prédios passam a cobrir
+; tudo que está entre elas. Juntar coisas muito distantes vira um download enorme e uma grade
+; de relevo de milhões de pontos, então há um teto para o maior lado da área resultante.
+; Uma rede sozinha abre sempre, do tamanho que for: o limite vale só para a junção.
+; Referência: a maior rede do acervo tem 20,6 km de lado; uma subestação, de 4,5 a 9,5 km.
+extensao_max_km = 40
 
 [importacao]
 ; Tamanho máximo de um arquivo KML/KMZ importado como camada.
@@ -129,6 +140,7 @@ class Settings:
     login_automatico: bool
     kml_max_mb: int
     kml_max_feicoes: int
+    extensao_max_km: float
 
     @property
     def sso_pronto(self) -> bool:
@@ -210,6 +222,7 @@ def carregar(path: Path = CONF_PATH) -> Settings:
         login_automatico=cp.getboolean("atlas", "login_automatico"),
         kml_max_mb=cp.getint("importacao", "kml_max_mb"),
         kml_max_feicoes=cp.getint("importacao", "kml_max_feicoes"),
+        extensao_max_km=cp.getfloat("composicao", "extensao_max_km"),
     )
 
 

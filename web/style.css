@@ -233,3 +233,42 @@ button:disabled, input:disabled, select:disabled { opacity: .45; cursor: not-all
   content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px;
   background: var(--accent); opacity: .6; z-index: 3; pointer-events: none;
 }
+
+/* árvore de pastas no acervo */
+.barra-pastas { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.barra-pastas button { padding: 3px 9px; font-size: 12px; }
+.barra-pastas .ctx-status { margin: 0; flex: 1; min-width: 0; }
+.arvore { max-height: 460px; }
+.pasta { display: flex; align-items: center; gap: 4px; padding: 2px 0; list-style: none; }
+.pasta-nome {
+  flex: 1; text-align: left; background: none; border: 0; color: var(--text);
+  font-weight: 600; font-size: 12px; cursor: pointer; padding: 3px 0;
+}
+.pasta-nome::before { content: "▸ "; color: var(--muted); }
+.pasta-nome.aberta::before { content: "▾ "; }
+.pasta-nome:hover { color: var(--accent); }
+button.mini { padding: 2px 7px; font-size: 11px; }
+
+/* ajustes por rede: visibilidade e pasta */
+.ajustes { display: flex; gap: 6px; margin-top: 4px; align-items: center; }
+.ajustes button { flex: none; padding: 3px 8px; font-size: 11px; }
+.ajustes select { flex: 1; min-width: 0; font-size: 11px; padding: 3px 6px; }
+
+/* escolha de subestações */
+.ses {
+  margin-top: 6px; padding: 7px 8px; border-radius: 6px;
+  background: var(--panel); border: 1px solid var(--line); font-size: 12px;
+}
+.se-row { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
+.se-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.se-row .km { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ses .acoes { margin-top: 6px; }
+
+/* visualização atual */
+.acervo.compacta { max-height: 220px; }
+.acervo-item.linha { display: flex; align-items: center; gap: 8px; padding: 5px 9px; }
+.acervo-item.linha .name { flex: none; font-weight: 600; }
+.acervo-item.linha .meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acervo-item.linha button { flex: none; padding: 2px 8px; font-size: 11px; }
+.em-pasta { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+.em-pasta select { font-size: 11px; padding: 2px 5px; max-width: 150px; }
