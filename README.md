@@ -146,6 +146,18 @@ exclui nada.
 | Atlas · `.env` | `EXPANSION_URL` | endereço do Expansion (único retorno aceito) |
 | Atlas · `.env` | `EXPANSION_SECRET` | a mesma frase |
 
+> **A frase secreta não fica no repositório.** O `conf.ini` está no `.gitignore` e o modelo
+> embutido em `app/config.py` traz `segredo =` vazio. Gere a sua com:
+>
+> ```bash
+> python -c "import secrets; print(secrets.token_urlsafe(48))"
+> ```
+>
+> e use o mesmo valor no `conf.ini` do Expansion e no `EXPANSION_SECRET` do `.env` do Atlas.
+> Com `ativo = sim` e segredo vazio o serviço sobe em **modo Visualização** e recusa qualquer
+> alteração com 503 — de propósito: uma configuração pela metade não pode acabar liberando tudo.
+> Teste: `python tools/teste_falha_fechada.py`.
+
 `url_publica` e `EXPANSION_URL` precisam ser **idênticos**, esquema e porta inclusive. O Atlas
 compara os dois antes de devolver o ticket e recusa com uma mensagem que mostra o que recebeu e o
 que esperava.
@@ -181,6 +193,48 @@ Testes: `python tools/teste_ticket_atlas.py` (o ticket do Atlas é aceito pelo E
 segredo certo), `python tools/teste_retorno_login.py` (endereço de retorno e flags do cookie, com e
 sem proxy) e `python tools/teste_api.py` (regras de acesso da API, ponta a ponta).
 
+## Abrir por subestação e compor a visualização
+
+Uma rede grande demora para abrir inteira, e quase sempre o estudo é de uma subestação só. Em
+**Escolher SEs**, cada subestação aparece com o peso exato (postes e km) e pode ser aberta
+sozinha. Medido na rede do ES (55,7 MB, 11.708 postes, 4 SEs):
+
+| O que abre | Postes | Tempo |
+|---|---|---|
+| Rede inteira | 11.708 | 2,7 s |
+| Só a SE AER | 1.096 (9%) | 0,8 s |
+
+Com a visualização aberta, **+ SE** acrescenta outra subestação e **Tirar** remove — inclusive de
+outra rede do acervo, desde que da mesma região. O endereço acompanha a composição
+(`?c=rede:AER,CAB`), então é possível compartilhar exatamente o que está na tela.
+
+Por dentro, o servidor recorta cada rede pelas subestações pedidas e junta tudo num **modelo
+único**, com uma origem, uma lista de postes e circuitos renumerados. É isso que permite que
+relevo, vegetação, prédios, ruas e exportação em KMZ continuem funcionando sem saber que a cena
+veio de várias bases.
+
+Duas recusas, ambas com mensagem explicando o motivo:
+
+- **Regiões diferentes** (SP com ES) não se juntam: os fusos UTM são incompatíveis.
+- **Pedaços distantes demais** (acima de `extensao_max_km`, padrão 40 km no maior lado): o relevo
+  e os prédios cobririam todo o vazio entre eles. Juntar duas subestações a 91 km uma da outra
+  pediria uma grade de relevo de 5,1 milhões de pontos e mais de mil ladrilhos de dossel — antes
+  do limite, o pedido ficava pendurado sem explicação. Uma rede sozinha abre sempre, do tamanho
+  que for; o limite vale só para a junção.
+
+Contagem: o peso de uma subestação é exato, mas somar duas não dá o total da dupla — postes de
+fronteira pertencem às duas e entram uma vez só (AER + CAB = 3.447, e não 3.452).
+
+Teste: `python tools/teste_compor.py` (recorte, junção, renumeração de índices e os dois limites).
+
+## Pastas do acervo
+
+O acervo é uma árvore de pastas compartilhada: criar, renomear, mover redes entre pastas e
+excluir pastas vazias. Uma pasta com conteúdo não é excluída — a mensagem diz o que há dentro.
+
+Mover uma rede **não** afeta projeto nenhum: as etapas referenciam a rede pelo identificador, e não
+pelo caminho. Uma rede cuja pasta tenha sumido reaparece na raiz em vez de desaparecer da árvore.
+
 ## Redes públicas e privadas
 
 Cada rede, camada KML e projeto é **pública** (todos veem) ou **privada** (só a matrícula que enviou).
@@ -188,6 +242,14 @@ O filtro é aplicado no SQL, então uma entrada privada não chega ao navegador 
 pelo id direto — a resposta é 404, igual à de algo inexistente.
 
 Excluir: item privado, só o dono; item público, qualquer usuário logado (como antes).
+
+**Trocar entre pública e privada**: só quem enviou a rede (ou um administrador do Atlas). Redes
+enviadas antes do login existir ficaram sem dono registrado; ao tornar uma delas privada, quem fez
+a troca passa a constar como dono — sem isso a rede sumiria para todo mundo, já que o filtro
+compara matrículas e nenhuma casa com o campo vazio.
+
+**Exclusão barrada por projeto**: uma rede usada por alguma etapa não é excluída. O erro nomeia o
+projeto e a etapa que a seguram; é preciso remover a etapa ou o projeto antes.
 
 ## Projetos em etapas
 
@@ -203,8 +265,11 @@ Cada etapa aponta para uma rede do acervo.
 - **Comparar lado a lado** divide a tela em dois; as duas câmeras andam juntas, para comparar o mesmo
   ponto nas duas etapas.
 
-Para criar: crie o projeto, abra a rede que será a etapa e clique em **Nova etapa** no cartão do
-projeto.
+Salvar uma etapa salva **a visualização como está**: todas as redes e as subestações de cada uma
+ficam gravadas na etapa, e reabrir o projeto remonta exatamente aquela composição.
+
+Para criar: crie o projeto, monte a visualização (uma rede inteira, ou as subestações que
+interessam, de quantas redes quiser) e clique em **Nova etapa** no cartão do projeto.
 
 ## Exportar KMZ do que está visível
 

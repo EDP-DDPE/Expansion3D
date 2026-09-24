@@ -46,7 +46,20 @@
         <select id="acervo-regiao" aria-label="Filtrar por região"></select>
         <input id="acervo-busca" type="search" placeholder="Buscar por SE, circuito, usuário…">
       </div>
-      <ul id="acervo" class="acervo"></ul>
+      <div class="barra-pastas">
+        <button id="nova-pasta" type="button" class="secundario">Nova pasta</button>
+        <span id="nova-pasta-em" class="em-pasta"></span>
+      </div>
+      <p id="pastas-status" class="ctx-status"></p>
+      <ul id="acervo" class="acervo arvore"></ul>
+    </section>
+
+    <section>
+      <h2>Visualização atual</h2>
+      <p id="visualizacao-resumo" class="ctx-status">Nenhuma rede aberta.</p>
+      <ul id="visualizacao" class="acervo compacta"></ul>
+      <p class="note">Cada linha é um pedaço carregado. Dá para tirar uma subestação daqui, ou
+        acrescentar outra pelo botão <b>+ SE</b> no acervo — inclusive de outra rede da mesma região.</p>
     </section>
 
     <section>

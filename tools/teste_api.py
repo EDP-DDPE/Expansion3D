@@ -35,8 +35,8 @@ def conferir(rotulo: str, condicao: bool, detalhe: str = "") -> None:
     print(f"{'ok  ' if condicao else 'FALHA'} {rotulo}{f' · {detalhe}' if detalhe else ''}")
 
 
-def cookie_de(matricula: str, nome: str) -> str:
-    return sessao.criar_cookie(sessao.Usuario(matricula=matricula, nome=nome))
+def cookie_de(matricula: str, nome: str, admin: bool = False) -> str:
+    return sessao.criar_cookie(sessao.Usuario(matricula=matricula, nome=nome, admin=admin))
 
 
 class Cliente:
@@ -106,6 +106,7 @@ def main() -> int:
         visitante = Cliente()
         dono = Cliente(cookie_de("7034", "Dono"))
         outro = Cliente(cookie_de("9999", "Outro"))
+        chefe = Cliente(cookie_de("0001", "Administrador", admin=True))
 
         # --- sessão -------------------------------------------------------------------------
         conferir("visitante sem usuário", visitante.json("/api/sessao")["usuario"] is None)
@@ -183,6 +184,143 @@ def main() -> int:
         finally:
             dono.delete(f"/api/projetos/{projeto['id']}")
         conferir("projeto de teste removido", catalogo.obter_projeto(projeto["id"], "7034") is None)
+
+        # --- subestações e composição --------------------------------------------------------
+        multi = max(publicas, key=lambda r: len(r["resumo"].get("subestacoes", [])))
+        ses = visitante.json(f"/api/subestacoes?id={multi['id']}")["subestacoes"]
+        conferir("lista as subestações da rede", len(ses) >= 1,
+                 ", ".join(f"{s['cod']}={s['postes']}p" for s in ses))
+
+        inteira = visitante.json(f"/api/rede?id={multi['id']}")
+        postes_inteira = inteira["meta"]["resumo"]["postes"]
+        menor = min(ses, key=lambda s: s["postes"])
+        t0 = time.perf_counter()
+        recorte = visitante.json(f"/api/rede?c={multi['id']}:{menor['cod']}")
+        dt = time.perf_counter() - t0
+        conferir("recorte traz só a SE pedida",
+                 [se["cod"] for se in recorte["subestacoes"]] == [menor["cod"]])
+        conferir("recorte bate com o peso anunciado",
+                 recorte["meta"]["resumo"]["postes"] == menor["postes"],
+                 f"{recorte['meta']['resumo']['postes']} postes")
+        if len(ses) > 1:
+            conferir("recorte é bem menor que a rede inteira",
+                     recorte["meta"]["resumo"]["postes"] < postes_inteira,
+                     f"{recorte['meta']['resumo']['postes']} de {postes_inteira} postes "
+                     f"({recorte['meta']['resumo']['postes'] / postes_inteira:.0%}) em {dt:.1f} s")
+            duas = sorted(ses, key=lambda s: s["postes"])[:2]
+            soma = visitante.json(f"/api/rede?c={multi['id']}:{duas[0]['cod']},{duas[1]['cod']}")
+            juntos = soma["meta"]["resumo"]["postes"]
+            previsto = duas[0]["postes"] + duas[1]["postes"]
+            # não é soma exata: postes de fronteira pertencem às duas SEs e entram uma vez só
+            conferir("duas SEs juntas não passam da soma das partes",
+                     max(duas[0]["postes"], duas[1]["postes"]) <= juntos <= previsto,
+                     f"{juntos} postes (soma das partes: {previsto}, "
+                     f"{previsto - juntos} compartilhado(s))")
+            conferir("as duas SEs vieram", len(soma["subestacoes"]) == 2)
+            conferir("composição anota do que é feita", len(soma["meta"]["composicao"]) >= 1)
+
+        status, corpo, _ = visitante.get(f"/api/rede?c={multi['id']}:NAOEXISTE")
+        conferir("SE inexistente é recusada", status == 422, f"HTTP {status}")
+
+        # juntar regiões diferentes não pode
+        outra_regiao = next((r for r in publicas if r["epsg"] != multi["epsg"]), None)
+        if outra_regiao:
+            status, corpo, _ = visitante.get(
+                f"/api/rede?c={multi['id']}:{menor['cod']};{outra_regiao['id']}:")
+            conferir("misturar regiões é recusado", status == 422, f"HTTP {status}")
+
+        # --- trocar público/privado ------------------------------------------------------------
+        minha = catalogo.adicionar("hash-vis-teste", "minha.mdb", 10, "Dono", "teste",
+                                   {"subestacoes": [], "circuitos": [], "numeros": {}},
+                                   multi["regiao"], multi["epsg"], catalogo.PUBLICA, "7034")
+        try:
+            status, _, _ = outro.pedir("PATCH", f"/api/acervo/{minha['id']}",
+                                       {"visibilidade": "privada"})
+            conferir("quem não enviou não muda a visibilidade", status == 403, f"HTTP {status}")
+            status, corpo, _ = dono.pedir("PATCH", f"/api/acervo/{minha['id']}",
+                                          {"visibilidade": "privada"})
+            conferir("o dono torna a rede privada", status == 200
+                     and json.loads(corpo)["visibilidade"] == "privada", f"HTTP {status}")
+            conferir("e some para os outros",
+                     minha["id"] not in {r["id"] for r in outro.json("/api/acervo")["redes"]})
+            dono.pedir("PATCH", f"/api/acervo/{minha['id']}", {"visibilidade": "publica"})
+            conferir("e volta a aparecer quando fica pública",
+                     minha["id"] in {r["id"] for r in outro.json("/api/acervo")["redes"]})
+            status, _, _ = dono.pedir("PATCH", f"/api/acervo/{minha['id']}",
+                                      {"visibilidade": "qualquer"})
+            conferir("visibilidade inválida é recusada", status == 422, f"HTTP {status}")
+
+            # rede sem dono (enviada antes do login): tornar privada não pode escondê-la de todos
+            orfa = catalogo.adicionar("hash-orfa-teste", "orfa.mdb", 10, "Alguém", "sem dono",
+                                      {"subestacoes": [], "circuitos": [], "numeros": {}},
+                                      multi["regiao"], multi["epsg"], catalogo.PUBLICA, "")
+            try:
+                status, _, _ = dono.pedir("PATCH", f"/api/acervo/{orfa['id']}",
+                                          {"visibilidade": "privada"})
+                conferir("usuário comum não mexe em rede sem dono", status == 403, f"HTTP {status}")
+                status, corpo, _ = chefe.pedir("PATCH", f"/api/acervo/{orfa['id']}",
+                                               {"visibilidade": "privada"})
+                conferir("admin torna privada uma rede sem dono", status == 200, f"HTTP {status}")
+                atual = catalogo.obter_bruto(orfa["id"])
+                conferir("a rede ganha dono em vez de sumir para todos",
+                         atual["dono"] == "0001", f"dono={atual['dono']!r}")
+                conferir("e continua visível para quem a tornou privada",
+                         orfa["id"] in {r["id"] for r in chefe.json("/api/acervo")["redes"]})
+                conferir("e sumiu para os demais",
+                         orfa["id"] not in {r["id"] for r in dono.json("/api/acervo")["redes"]})
+            finally:
+                catalogo.remover(orfa["id"])
+
+            # --- pastas ---------------------------------------------------------------------
+            status, corpo, _ = visitante.post("/api/pastas", corpo={"nome": "Estudos 2027"})
+            conferir("visitante não cria pasta", status == 401, f"HTTP {status}")
+            pasta = json.loads(dono.post("/api/pastas", corpo={"nome": "Estudos 2027"})[1])
+            dentro = json.loads(dono.post("/api/pastas",
+                                          corpo={"nome": "Sub", "pai": pasta["id"]})[1])
+            conferir("pasta criada", pasta["nome"] == "Estudos 2027")
+
+            status, _, _ = dono.pedir("PATCH", f"/api/acervo/{minha['id']}",
+                                      {"pasta": pasta["id"]})
+            conferir("rede movida para a pasta", status == 200, f"HTTP {status}")
+            conferir("a rede sabe onde está",
+                     catalogo.obter_bruto(minha["id"])["pasta"] == pasta["id"])
+
+            status, _, _ = dono.delete(f"/api/pastas/{pasta['id']}")
+            conferir("pasta com conteúdo não é excluída", status == 409, f"HTTP {status}")
+
+            status, _, _ = dono.pedir("PATCH", f"/api/pastas/{pasta['id']}",
+                                      {"pai": dentro["id"]})
+            conferir("pasta não entra dentro de si mesma", status == 409, f"HTTP {status}")
+
+            status, _, _ = dono.pedir("PATCH", f"/api/acervo/{minha['id']}", {"pasta": ""})
+            conferir("rede volta para a raiz", status == 200, f"HTTP {status}")
+            dono.delete(f"/api/pastas/{dentro['id']}")
+            status, _, _ = dono.delete(f"/api/pastas/{pasta['id']}")
+            conferir("pasta vazia é excluída", status == 200, f"HTTP {status}")
+
+            # --- rede usada por projeto não pode ser excluída --------------------------------
+            # de propósito sobre a rede descartável: o teste não pode apagar rede de verdade
+            proj = json.loads(dono.post("/api/projetos",
+                                        corpo={"nome": "Projeto que segura",
+                                               "regiao": multi["regiao"]})[1])
+            try:
+                dono.post(f"/api/projetos/{proj['id']}/etapas",
+                          corpo={"nome": "Etapa 0", "composicao": f"{minha['id']}:"})
+                status, corpo, _ = dono.delete(f"/api/acervo/{minha['id']}")
+                conferir("rede usada por projeto não é excluída", status == 409, f"HTTP {status}")
+                conferir("o erro diz qual projeto segura",
+                         "Projeto que segura" in corpo.decode("utf-8", "replace"))
+                conferir("a rede continua no acervo", catalogo.obter_bruto(minha["id"]) is not None)
+                etapas = dono.json(f"/api/projetos/{proj['id']}")["etapas"]
+                conferir("a etapa guardou a composição",
+                         etapas[0]["composicao"] == [{"rede": minha["id"], "subestacoes": []}],
+                         str(etapas[0]["composicao"]))
+            finally:
+                dono.delete(f"/api/projetos/{proj['id']}")
+            status, _, _ = dono.delete(f"/api/acervo/{minha['id']}")
+            conferir("sem projeto, a exclusão é liberada", status == 200, f"HTTP {status}")
+        finally:
+            catalogo.remover(minha["id"])
     finally:
         servidor.should_exit = True
 
